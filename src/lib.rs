@@ -4,6 +4,8 @@ extern crate indoc;
 
 use pulldown_cmark::{html, CodeBlockKind, CowStr, Event, Options, Parser, Tag};
 
+use std::path::Path;
+
 #[derive(Debug, PartialEq, Clone)]
 pub struct Markdown {
     pub as_html: String,
@@ -17,7 +19,23 @@ pub struct Heading {
     pub level: u16,
 }
 
-pub fn parse(input: &str) -> Markdown {
+#[derive(Debug, PartialEq, Clone)]
+pub struct ParseOptions {
+    /// Changes the root URL for any links that point to the current domain.
+    url_root: String,
+}
+
+impl Default for ParseOptions {
+    fn default() -> Self {
+        ParseOptions {
+            url_root: String::from("/"),
+        }
+    }
+}
+
+pub fn parse(input: &str, opts: Option<ParseOptions>) -> Markdown {
+    let parse_opts = opts.unwrap_or(ParseOptions::default());
+
     let mut options = Options::empty();
     options.insert(Options::ENABLE_STRIKETHROUGH);
     options.insert(Options::ENABLE_TASKLISTS);
@@ -45,6 +63,20 @@ pub fn parse(input: &str) -> Markdown {
                     Some(Event::Html(CowStr::Borrowed("</div>")))
                 } else {
                     Some(Event::End(Tag::CodeBlock(CodeBlockKind::Fenced(inner))))
+                }
+            }
+
+            // Link rewrites
+            Event::Start(Tag::Link(link_type, url, title)) => {
+                if Path::new(&url.clone().into_string()).is_absolute() {
+                    let rewritten = Path::new(&parse_opts.url_root)
+                        .join(&url.to_string()[1..])
+                        .display()
+                        .to_string();
+
+                    Some(Event::Start(Tag::Link(link_type, rewritten.into(), title)))
+                } else {
+                    Some(Event::Start(Tag::Link(link_type, url, title)))
                 }
             }
 
@@ -109,7 +141,7 @@ mod test {
         ## Some other heading
         "};
 
-        let Markdown { as_html, headings } = parse(&input);
+        let Markdown { as_html, headings } = parse(&input, None);
 
         assert_eq!(
             as_html,
@@ -136,5 +168,86 @@ mod test {
             ]
         );
     }
-}
 
+    #[test]
+    fn optionally_rewrites_link_root_path() {
+        let input = indoc! {"
+        [an link](/foo/bar)
+        "};
+
+        let Markdown {
+            as_html,
+            headings: _headings,
+        } = parse(&input, None);
+
+        assert_eq!(
+            as_html,
+            indoc! {"
+                <p><a href=\"/foo/bar\">an link</a></p>
+            "}
+        );
+
+        let Markdown {
+            as_html,
+            headings: _headings,
+        } = parse(
+            &input,
+            Some(ParseOptions {
+                url_root: "/other/root".to_owned(),
+            }),
+        );
+
+        assert_eq!(
+            as_html,
+            indoc! {"
+                <p><a href=\"/other/root/foo/bar\">an link</a></p>
+            "}
+        );
+    }
+
+    #[test]
+    fn does_not_rewrite_non_absolute_urls() {
+        let input = indoc! {"
+        [an link](https://www.google.com)
+        "};
+
+        let Markdown {
+            as_html,
+            headings: _headings,
+        } = parse(
+            &input,
+            Some(ParseOptions {
+                url_root: "/other/root".to_owned(),
+            }),
+        );
+
+        assert_eq!(
+            as_html,
+            indoc! {"
+                <p><a href=\"https://www.google.com\">an link</a></p>
+            "}
+        );
+
+
+        let input = indoc! {"
+        [an link](relative/link)
+        "};
+
+        let Markdown {
+            as_html,
+            headings: _headings,
+        } = parse(
+            &input,
+            Some(ParseOptions {
+                url_root: "/other/root".to_owned(),
+            }),
+        );
+
+        assert_eq!(
+            as_html,
+            indoc! {"
+                <p><a href=\"relative/link\">an link</a></p>
+            "}
+        );
+    }
+}
