@@ -22,7 +22,7 @@ pub struct Heading {
 #[derive(Debug, PartialEq, Clone)]
 pub struct ParseOptions {
     /// Changes the root URL for any links that point to the current domain.
-    url_root: String,
+    pub url_root: String,
 }
 
 impl Default for ParseOptions {
