@@ -2,8 +2,9 @@
 #[macro_use]
 extern crate indoc;
 
-use pulldown_cmark::{html, CodeBlockKind, CowStr, Event, Options, Parser, Tag};
+use pulldown_cmark::{html, CodeBlockKind, CowStr, Event, LinkType, Options, Parser, Tag};
 
+use std::collections::HashMap;
 use std::path::Path;
 
 #[derive(Debug, PartialEq, Clone)]
@@ -23,12 +24,14 @@ pub struct Heading {
 pub struct ParseOptions {
     /// Changes the root URL for any links that point to the current domain.
     pub url_root: String,
+    pub link_rewrite_rules: HashMap<String, String>,
 }
 
 impl Default for ParseOptions {
     fn default() -> Self {
         ParseOptions {
             url_root: String::from("/"),
+            link_rewrite_rules: HashMap::new(),
         }
     }
 }
@@ -68,16 +71,16 @@ pub fn parse(input: &str, opts: Option<ParseOptions>) -> Markdown {
 
             // Link rewrites
             Event::Start(Tag::Link(link_type, url, title)) => {
-                if Path::new(&url.clone().into_string()).is_absolute() {
-                    let rewritten = Path::new(&parse_opts.url_root)
-                        .join(&url.to_string()[1..])
-                        .display()
-                        .to_string();
+                let (link_type, url, title) = rewrite_link(link_type, url, title, &parse_opts);
 
-                    Some(Event::Start(Tag::Link(link_type, rewritten.into(), title)))
-                } else {
-                    Some(Event::Start(Tag::Link(link_type, url, title)))
-                }
+                Some(Event::Start(Tag::Link(link_type, url, title)))
+            }
+
+            // Image link rewrites
+            Event::Start(Tag::Image(link_type, url, title)) => {
+                let (link_type, url, title) = rewrite_link(link_type, url, title, &parse_opts);
+
+                Some(Event::Start(Tag::Image(link_type, url, title)))
             }
 
             // Apply heading anchor tags
@@ -125,6 +128,32 @@ pub fn parse(input: &str, opts: Option<ParseOptions>) -> Markdown {
     html::push_html(&mut as_html, parser);
 
     Markdown { as_html, headings }
+}
+
+/// Rewrites the link by either setting a different root path, or by
+/// swapping the whole URL if there is a matching rule in the rewrite
+/// rules.
+fn rewrite_link<'a>(
+    link_type: LinkType,
+    url: CowStr<'a>,
+    title: CowStr<'a>,
+    parse_opts: &'a ParseOptions,
+) -> (LinkType, CowStr<'a>, CowStr<'a>) {
+    if let Some(matching_link) = parse_opts
+        .link_rewrite_rules
+        .get(&url.clone().into_string())
+    {
+        (link_type, matching_link.as_str().into(), title)
+    } else if Path::new(&url.clone().into_string()).is_absolute() {
+        let rewritten = Path::new(&parse_opts.url_root)
+            .join(&url.to_string()[1..])
+            .display()
+            .to_string();
+
+        (link_type, rewritten.into(), title)
+    } else {
+        (link_type, url, title)
+    }
 }
 
 #[cfg(test)]
@@ -187,15 +216,13 @@ mod test {
             "}
         );
 
+        let mut options = ParseOptions::default();
+        options.url_root = "/other/root".to_owned();
+
         let Markdown {
             as_html,
             headings: _headings,
-        } = parse(
-            &input,
-            Some(ParseOptions {
-                url_root: "/other/root".to_owned(),
-            }),
-        );
+        } = parse(&input, Some(options));
 
         assert_eq!(
             as_html,
@@ -211,16 +238,13 @@ mod test {
         [an link](https://www.google.com)
         "};
 
+        let mut options = ParseOptions::default();
+        options.url_root = "/other/root".to_owned();
+
         let Markdown {
             as_html,
             headings: _headings,
-        } = parse(
-            &input,
-            Some(ParseOptions {
-                url_root: "/other/root".to_owned(),
-            }),
-        );
-
+        } = parse(&input, Some(options));
         assert_eq!(
             as_html,
             indoc! {"
@@ -228,25 +252,74 @@ mod test {
             "}
         );
 
-
         let input = indoc! {"
         [an link](relative/link)
         "};
 
+        let mut options = ParseOptions::default();
+        options.url_root = "/other/root".to_owned();
+
         let Markdown {
             as_html,
             headings: _headings,
-        } = parse(
-            &input,
-            Some(ParseOptions {
-                url_root: "/other/root".to_owned(),
-            }),
-        );
+        } = parse(&input, Some(options));
 
         assert_eq!(
             as_html,
             indoc! {"
                 <p><a href=\"relative/link\">an link</a></p>
+            "}
+        );
+    }
+
+    #[test]
+    fn rewrites_any_image_that_has_an_explicit_rewrite_mapping() {
+        let input = indoc! {"
+        ![an image](/assets/cat.jpg)
+        "};
+
+        let mut options = ParseOptions::default();
+
+        options.link_rewrite_rules.insert(
+            "/assets/cat.jpg".to_owned(),
+            "https://example.com/cat.jpg".to_owned(),
+        );
+
+        let Markdown {
+            as_html,
+            headings: _headings,
+        } = parse(&input, Some(options));
+
+        assert_eq!(
+            as_html,
+            indoc! {"
+                <p><img src=\"https://example.com/cat.jpg\" alt=\"an image\" /></p>
+            "}
+        );
+    }
+
+    #[test]
+    fn rewrites_any_link_that_has_an_explicit_rewrite_mapping() {
+        let input = indoc! {"
+        [an document](/assets/plans.pdf)
+        "};
+
+        let mut options = ParseOptions::default();
+
+        options.link_rewrite_rules.insert(
+            "/assets/plans.pdf".to_owned(),
+            "https://example.com/plans.pdf".to_owned(),
+        );
+
+        let Markdown {
+            as_html,
+            headings: _headings,
+        } = parse(&input, Some(options));
+
+        assert_eq!(
+            as_html,
+            indoc! {"
+                <p><a href=\"https://example.com/plans.pdf\">an document</a></p>
             "}
         );
     }
