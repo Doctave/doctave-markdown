@@ -25,6 +25,7 @@ pub struct ParseOptions {
     /// Changes the root URL for any links that point to the current domain.
     pub url_root: String,
     pub link_rewrite_rules: HashMap<String, String>,
+    pub url_params: HashMap<String, String>,
 }
 
 impl Default for ParseOptions {
@@ -32,6 +33,7 @@ impl Default for ParseOptions {
         ParseOptions {
             url_root: String::from("/"),
             link_rewrite_rules: HashMap::new(),
+            url_params: HashMap::new(),
         }
     }
 }
@@ -72,6 +74,12 @@ pub fn parse(input: &str, opts: Option<ParseOptions>) -> Markdown {
             // Link rewrites
             Event::Start(Tag::Link(link_type, url, title)) => {
                 let (link_type, url, title) = rewrite_link(link_type, url, title, &parse_opts);
+
+                let url = if !parse_opts.url_params.is_empty() {
+                    append_parameters(url, &parse_opts)
+                } else {
+                    url
+                };
 
                 Some(Event::Start(Tag::Link(link_type, url, title)))
             }
@@ -154,6 +162,27 @@ fn rewrite_link<'a>(
     } else {
         (link_type, url, title)
     }
+}
+
+fn append_parameters<'a>(url: CowStr<'a>, parse_opts: &'a ParseOptions) -> CowStr<'a> {
+    let mut appended = url.into_string();
+    appended.push_str("?");
+
+    let mut position = 0;
+    let length = parse_opts.url_params.len();
+
+    for (key, value) in &parse_opts.url_params {
+        appended.push_str(key);
+        appended.push_str("=");
+        appended.push_str(value);
+
+        position += 1;
+        if position != length {
+            appended.push_str("&");
+        }
+    }
+
+    appended.into()
 }
 
 #[cfg(test)]
@@ -322,5 +351,55 @@ mod test {
                 <p><a href=\"https://example.com/plans.pdf\">an document</a></p>
             "}
         );
+    }
+
+    #[test]
+    fn appends_parameters_to_the_end_of_urls() {
+        let input = indoc! {"
+        [an link](relative/link)
+        "};
+
+        let mut options = ParseOptions::default();
+
+        options.url_params.insert(
+            "base".to_owned(), "123".to_owned()
+        );
+
+        let Markdown {
+            as_html,
+            headings: _headings,
+        } = parse(&input, Some(options));
+
+        assert_eq!(
+            as_html,
+            indoc! {"
+                <p><a href=\"relative/link?base=123\">an link</a></p>
+            "}
+        );
+    }
+
+    #[test]
+    fn appends_multiple_parameters_to_the_end_of_urls() {
+        let input = indoc! {"
+        [an link](relative/link)
+        "};
+
+        let mut options = ParseOptions::default();
+
+        options.url_params.insert(
+            "bases".to_owned(), "are".to_owned()
+        );
+        options.url_params.insert(
+            "belong".to_owned(), "tous".to_owned()
+        );
+
+        let Markdown {
+            as_html,
+            headings: _headings,
+        } = parse(&input, Some(options));
+
+        assert!(as_html.contains("bases=are"));
+        assert!(as_html.contains("belong=tous"));
+        assert!(as_html.contains("&amp;"));
     }
 }
