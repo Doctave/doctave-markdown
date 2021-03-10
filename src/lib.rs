@@ -3,6 +3,7 @@
 extern crate indoc;
 
 use pulldown_cmark::{html, CodeBlockKind, CowStr, Event, LinkType, Options, Parser, Tag};
+use url::Url;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -75,7 +76,7 @@ pub fn parse(input: &str, opts: Option<ParseOptions>) -> Markdown {
             Event::Start(Tag::Link(link_type, url, title)) => {
                 let (link_type, url, title) = rewrite_link(link_type, url, title, &parse_opts);
 
-                let url = if !parse_opts.url_params.is_empty() {
+                let url = if !parse_opts.url_params.is_empty() && is_in_local_domain(&url) {
                     append_parameters(url, &parse_opts)
                 } else {
                     url
@@ -183,6 +184,15 @@ fn append_parameters<'a>(url: CowStr<'a>, parse_opts: &'a ParseOptions) -> CowSt
     }
 
     appended.into()
+}
+
+fn is_in_local_domain(url_string: &str) -> bool {
+    match Url::parse(url_string) {
+        Ok(url) => url.host().is_none(),
+        Err(url::ParseError::RelativeUrlWithoutBase) => true,
+        Err(url::ParseError::EmptyHost) => true,
+        Err(_) => false,
+    }
 }
 
 #[cfg(test)]
@@ -361,9 +371,9 @@ mod test {
 
         let mut options = ParseOptions::default();
 
-        options.url_params.insert(
-            "base".to_owned(), "123".to_owned()
-        );
+        options
+            .url_params
+            .insert("base".to_owned(), "123".to_owned());
 
         let Markdown {
             as_html,
@@ -386,12 +396,12 @@ mod test {
 
         let mut options = ParseOptions::default();
 
-        options.url_params.insert(
-            "bases".to_owned(), "are".to_owned()
-        );
-        options.url_params.insert(
-            "belong".to_owned(), "tous".to_owned()
-        );
+        options
+            .url_params
+            .insert("bases".to_owned(), "are".to_owned());
+        options
+            .url_params
+            .insert("belong".to_owned(), "tous".to_owned());
 
         let Markdown {
             as_html,
@@ -401,5 +411,58 @@ mod test {
         assert!(as_html.contains("bases=are"));
         assert!(as_html.contains("belong=tous"));
         assert!(as_html.contains("&amp;"));
+    }
+
+    #[test]
+    fn appends_multiple_parameters_to_the_end_of_absolute_urls() {
+        let input = indoc! {"
+        [an link](/absolute/link)
+        "};
+
+        let mut options = ParseOptions::default();
+
+        options
+            .url_params
+            .insert("base".to_owned(), "123".to_owned());
+
+        let Markdown {
+            as_html,
+            headings: _headings,
+        } = parse(&input, Some(options));
+
+        assert_eq!(
+            as_html,
+            indoc! {"
+                <p><a href=\"/absolute/link?base=123\">an link</a></p>
+            "}
+        );
+    }
+
+    #[test]
+    fn does_not_append_params_to_urls_with_a_specific_domain() {
+        let input = indoc! {"
+        [an link](http://www.example.com/)
+        "};
+
+        let mut options = ParseOptions::default();
+
+        options
+            .url_params
+            .insert("bases".to_owned(), "are".to_owned());
+        options
+            .url_params
+            .insert("belong".to_owned(), "tous".to_owned());
+
+        let Markdown {
+            as_html,
+            headings: _headings,
+        } = parse(&input, Some(options));
+
+        assert_eq!(
+            as_html,
+            indoc! {"
+                <p><a href=\"http://www.example.com/\">an link</a></p>
+            "}
+        );
     }
 }
