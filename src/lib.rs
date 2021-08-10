@@ -136,8 +136,6 @@ pub fn parse(input: &str, opts: Option<ParseOptions>) -> Markdown {
     let mut as_html = String::new();
     html::push_html(&mut as_html, parser);
 
-    println!("{}", &as_html);
-
     let mut allowed_div_classes = HashSet::new();
     allowed_div_classes.insert("mermaid");
 
@@ -163,8 +161,6 @@ pub fn parse(input: &str, opts: Option<ParseOptions>) -> Markdown {
         .allowed_classes(allowed_classes)
         .clean(&*as_html)
         .to_string();
-
-    println!("{}", &safe_html);
 
     Markdown {
         as_html: safe_html,
