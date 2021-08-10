@@ -8,6 +8,7 @@ description = "Custom wrapper for pulldown-cmark to generate Doctave-compatible 
 
 [dependencies]
 pulldown-cmark = { version = "0.8", default-features = false, features = ["simd"] }
+ammonia = "3"
 url = "2.2.1"
 
 [dev-dependencies]

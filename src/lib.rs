@@ -5,7 +5,7 @@ extern crate indoc;
 use pulldown_cmark::{html, CodeBlockKind, CowStr, Event, LinkType, Options, Parser, Tag};
 use url::Url;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 #[derive(Debug, PartialEq, Clone)]
@@ -136,7 +136,40 @@ pub fn parse(input: &str, opts: Option<ParseOptions>) -> Markdown {
     let mut as_html = String::new();
     html::push_html(&mut as_html, parser);
 
-    Markdown { as_html, headings }
+    println!("{}", &as_html);
+
+    let mut allowed_div_classes = HashSet::new();
+    allowed_div_classes.insert("mermaid");
+
+    let mut allowed_classes = HashMap::new();
+    allowed_classes.insert("div", allowed_div_classes);
+
+    let safe_html = ammonia::Builder::new()
+        .link_rel(None)
+        .add_tags(&["h1"])
+        .add_tag_attributes("h1", &["id"])
+        .add_tags(&["h2"])
+        .add_tag_attributes("h2", &["id"])
+        .add_tags(&["h3"])
+        .add_tag_attributes("h3", &["id"])
+        .add_tags(&["h4"])
+        .add_tag_attributes("h4", &["id"])
+        .add_tags(&["h5"])
+        .add_tag_attributes("h5", &["id"])
+        .add_tags(&["h6"])
+        .add_tag_attributes("h6", &["id"])
+        .add_tags(&["code"])
+        .add_tag_attributes("code", &["class"])
+        .allowed_classes(allowed_classes)
+        .clean(&*as_html)
+        .to_string();
+
+    println!("{}", &safe_html);
+
+    Markdown {
+        as_html: safe_html,
+        headings,
+    }
 }
 
 /// Rewrites the link by either setting a different root path, or by
@@ -332,7 +365,7 @@ mod test {
         assert_eq!(
             as_html,
             indoc! {"
-                <p><img src=\"https://example.com/cat.jpg\" alt=\"an image\" /></p>
+                <p><img src=\"https://example.com/cat.jpg\" alt=\"an image\"></p>
             "}
         );
     }
@@ -463,6 +496,72 @@ mod test {
             indoc! {"
                 <p><a href=\"http://www.example.com/\">an link</a></p>
             "}
+        );
+    }
+
+    #[test]
+    fn sanitizes_input() {
+        let input = indoc! {"
+        <script>
+        alert('I break you');
+        </script>
+        "};
+
+        let options = ParseOptions::default();
+
+        let Markdown {
+            as_html,
+            headings: _headings,
+        } = parse(&input, Some(options));
+
+        assert_eq!(as_html, "\n");
+    }
+
+    #[test]
+    fn allows_mermaid_blocks() {
+        let input = indoc! {"
+        ```mermaid
+        graph TD;
+            A-->B;
+            A-->C;
+        ```
+        "};
+
+        let options = ParseOptions::default();
+
+        let Markdown {
+            as_html,
+            headings: _headings,
+        } = parse(&input, Some(options));
+
+        assert_eq!(as_html, indoc!{"
+        <div class=\"mermaid\">graph TD;
+            A--&gt;B;
+            A--&gt;C;
+        </div>"});
+    }
+
+    #[test]
+    fn allows_code_blocks() {
+        let input = indoc! {"
+        ```ruby
+        1 + 1
+        ```
+        "};
+
+        let options = ParseOptions::default();
+
+        let Markdown {
+            as_html,
+            headings: _headings,
+        } = parse(&input, Some(options));
+
+        assert_eq!(
+            as_html,
+            indoc! {"
+        <pre><code class=\"language-ruby\">1 + 1
+        </code></pre>
+ "}
         );
     }
 }
