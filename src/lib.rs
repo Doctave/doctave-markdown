@@ -3,15 +3,16 @@
 extern crate indoc;
 
 use pulldown_cmark::{html, CodeBlockKind, CowStr, Event, LinkType, Options, Parser, Tag};
-use url::Url;
+use url::{ParseError, Url};
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct Markdown {
     pub as_html: String,
     pub headings: Vec<Heading>,
+    pub links: Vec<Link>,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -19,6 +20,18 @@ pub struct Heading {
     pub title: String,
     pub anchor: String,
     pub level: u16,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct Link {
+    pub title: String,
+    pub url: UrlType,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum UrlType {
+    Local(PathBuf),
+    Remote(Url),
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -50,6 +63,9 @@ pub fn parse(input: &str, opts: Option<ParseOptions>) -> Markdown {
     let mut headings = vec![];
     let mut heading_level = 0;
     let mut heading_index = 1u32;
+    let mut links = vec![];
+
+    let mut current_link = None;
 
     let parser = Parser::new_ext(input, options).filter_map(|event| {
         match event {
@@ -82,7 +98,32 @@ pub fn parse(input: &str, opts: Option<ParseOptions>) -> Markdown {
                     url
                 };
 
+                if link_type == LinkType::Inline {
+                    if let Ok(valid_url) = Url::parse(&url.clone())
+                        .map(|u| UrlType::Remote(u))
+                        .or_else(|e| match e {
+                            ParseError::EmptyHost | ParseError::RelativeUrlWithoutBase => {
+                                Ok(UrlType::Local(PathBuf::from(url.clone().into_string())))
+                            }
+                            e => Err(e),
+                        })
+                        .map_err(|l| l)
+                    {
+                        current_link = Some(Link {
+                            title: title.clone().to_string(),
+                            url: valid_url,
+                        });
+                    }
+                }
                 Some(Event::Start(Tag::Link(link_type, url, title)))
+            }
+
+            Event::End(Tag::Link(link_type, url, title)) => {
+                if current_link.is_some() {
+                    links.push(current_link.take().unwrap())
+                }
+
+                Some(Event::End(Tag::Link(link_type, url, title)))
             }
 
             // Image link rewrites
@@ -97,7 +138,13 @@ pub fn parse(input: &str, opts: Option<ParseOptions>) -> Markdown {
                 heading_level = level;
                 None
             }
+
             Event::Text(text) => {
+                if let Some(link) = &mut current_link {
+                    // We are in the middle of parsing a link. Push the title.
+                    link.title.push_str(&text);
+                }
+
                 if heading_level != 0 {
                     let mut anchor = text
                         .clone()
@@ -164,6 +211,7 @@ pub fn parse(input: &str, opts: Option<ParseOptions>) -> Markdown {
 
     Markdown {
         as_html: safe_html,
+        links,
         headings,
     }
 }
@@ -238,7 +286,11 @@ mod test {
         ## Some other heading
         "};
 
-        let Markdown { as_html, headings } = parse(&input, None);
+        let Markdown {
+            as_html,
+            headings,
+            links: _,
+        } = parse(&input, None);
 
         assert_eq!(
             as_html,
@@ -275,6 +327,7 @@ mod test {
         let Markdown {
             as_html,
             headings: _headings,
+            links: _,
         } = parse(&input, None);
 
         assert_eq!(
@@ -290,6 +343,7 @@ mod test {
         let Markdown {
             as_html,
             headings: _headings,
+            links: _,
         } = parse(&input, Some(options));
 
         assert_eq!(
@@ -312,6 +366,7 @@ mod test {
         let Markdown {
             as_html,
             headings: _headings,
+            links: _,
         } = parse(&input, Some(options));
         assert_eq!(
             as_html,
@@ -330,6 +385,7 @@ mod test {
         let Markdown {
             as_html,
             headings: _headings,
+            links: _,
         } = parse(&input, Some(options));
 
         assert_eq!(
@@ -356,6 +412,7 @@ mod test {
         let Markdown {
             as_html,
             headings: _headings,
+            links: _,
         } = parse(&input, Some(options));
 
         assert_eq!(
@@ -382,6 +439,7 @@ mod test {
         let Markdown {
             as_html,
             headings: _headings,
+            links: _,
         } = parse(&input, Some(options));
 
         assert_eq!(
@@ -407,6 +465,7 @@ mod test {
         let Markdown {
             as_html,
             headings: _headings,
+            links: _,
         } = parse(&input, Some(options));
 
         assert_eq!(
@@ -435,6 +494,7 @@ mod test {
         let Markdown {
             as_html,
             headings: _headings,
+            links: _,
         } = parse(&input, Some(options));
 
         assert!(as_html.contains("bases=are"));
@@ -457,6 +517,7 @@ mod test {
         let Markdown {
             as_html,
             headings: _headings,
+            links: _,
         } = parse(&input, Some(options));
 
         assert_eq!(
@@ -485,6 +546,7 @@ mod test {
         let Markdown {
             as_html,
             headings: _headings,
+            links: _,
         } = parse(&input, Some(options));
 
         assert_eq!(
@@ -508,6 +570,7 @@ mod test {
         let Markdown {
             as_html,
             headings: _headings,
+            links: _,
         } = parse(&input, Some(options));
 
         assert_eq!(as_html, "\n");
@@ -528,13 +591,17 @@ mod test {
         let Markdown {
             as_html,
             headings: _headings,
+            links: _,
         } = parse(&input, Some(options));
 
-        assert_eq!(as_html, indoc!{"
+        assert_eq!(
+            as_html,
+            indoc! {"
         <div class=\"mermaid\">graph TD;
             A--&gt;B;
             A--&gt;C;
-        </div>"});
+        </div>"}
+        );
     }
 
     #[test]
@@ -550,6 +617,7 @@ mod test {
         let Markdown {
             as_html,
             headings: _headings,
+            links: _,
         } = parse(&input, Some(options));
 
         assert_eq!(
@@ -558,6 +626,72 @@ mod test {
         <pre><code class=\"language-ruby\">1 + 1
         </code></pre>
  "}
+        );
+    }
+
+    #[test]
+    fn gathers_a_list_of_links_on_the_page() {
+        let input = indoc! {"
+        [foo](/bar)
+
+        [Example](https://www.example.com)
+        "};
+
+        let options = ParseOptions::default();
+
+        let Markdown {
+            as_html: _as_html,
+            headings: _headings,
+            links,
+        } = parse(&input, Some(options));
+
+        assert_eq!(
+            links,
+            vec![
+                Link {
+                    title: "foo".to_string(),
+                    url: UrlType::Local("/bar".into())
+                },
+                Link {
+                    title: "Example".to_string(),
+                    url: UrlType::Remote(Url::parse("https://www.example.com").unwrap())
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn gathers_the_internal_text_of_a_link() {
+        let input = indoc! {"
+        [**BOLD**](/bar)
+        [![AltText](/src/foo)](/bar)
+        ## [AnHeader](/bar)
+        "};
+
+        let options = ParseOptions::default();
+
+        let Markdown {
+            as_html: _as_html,
+            headings: _headings,
+            links,
+        } = parse(&input, Some(options));
+
+        assert_eq!(
+            links,
+            vec![
+                Link {
+                    title: "BOLD".to_string(),
+                    url: UrlType::Local("/bar".into())
+                },
+                Link {
+                    title: "AltText".to_string(),
+                    url: UrlType::Local("/bar".into())
+                },
+                Link {
+                    title: "AnHeader".to_string(),
+                    url: UrlType::Local("/bar".into())
+                }
+            ]
         );
     }
 }
