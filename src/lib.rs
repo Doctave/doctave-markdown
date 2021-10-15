@@ -140,18 +140,15 @@ pub fn parse(input: &str, opts: Option<ParseOptions>) -> Markdown {
             }
 
             Event::Text(text) => {
+                let text = convert_emojis(&text);
+
                 if let Some(link) = &mut current_link {
                     // We are in the middle of parsing a link. Push the title.
                     link.title.push_str(&text);
                 }
 
                 if heading_level != 0 {
-                    let mut anchor = text
-                        .clone()
-                        .into_string()
-                        .trim()
-                        .to_lowercase()
-                        .replace(" ", "-");
+                    let mut anchor = text.clone().trim().to_lowercase().replace(" ", "-");
 
                     anchor.push('-');
                     anchor.push_str(&heading_index.to_string());
@@ -172,7 +169,7 @@ pub fn parse(input: &str, opts: Option<ParseOptions>) -> Markdown {
                     heading_level = 0;
                     tmp
                 } else {
-                    Some(Event::Text(text))
+                    Some(Event::Text(text.into()))
                 }
             }
             _ => Some(event),
@@ -270,6 +267,39 @@ fn is_in_local_domain(url_string: &str) -> bool {
         Err(url::ParseError::EmptyHost) => true,
         Err(_) => false,
     }
+}
+
+fn convert_emojis(input: &str) -> String {
+    let mut acc = String::with_capacity(input.len());
+    let mut parsing_emoji = false;
+    let mut emoji_identifier = String::new();
+
+    for c in input.chars() {
+        match (c, parsing_emoji) {
+            (':', false) => parsing_emoji = true,
+            (':', true) => {
+                if let Some(emoji) = emojis::lookup(&emoji_identifier) {
+                    acc.push_str(emoji.as_str());
+                } else {
+                    acc.push(':');
+                    acc.push_str(&emoji_identifier);
+                    acc.push(':');
+                }
+
+                parsing_emoji = false;
+                emoji_identifier.truncate(0);
+            }
+            (_, true) => emoji_identifier.push(c),
+            (_, false) => acc.push(c),
+        }
+    }
+
+    if parsing_emoji {
+        acc.push(':');
+        acc.push_str(&emoji_identifier);
+    }
+
+    acc
 }
 
 #[cfg(test)]
@@ -694,4 +724,90 @@ mod test {
             ]
         );
     }
+
+    #[test]
+    fn detects_emojis() {
+        let input = indoc! {"
+        I am :grinning:.
+        "};
+
+        let options = ParseOptions::default();
+
+        let Markdown {
+            as_html,
+            headings: _headings,
+            links: _links,
+        } = parse(&input, Some(options));
+
+        assert_eq!(as_html, "<p>I am 😀.</p>\n");
+    }
+
+    #[test]
+    fn detects_emojis_in_links() {
+        let input = indoc! {"
+        [:grinning:](/foo)
+        "};
+
+        let options = ParseOptions::default();
+
+        let Markdown {
+            as_html,
+            headings: _headings,
+            links: _links,
+        } = parse(&input, Some(options));
+
+        assert_eq!(as_html, "<p><a href=\"/foo\">😀</a></p>\n");
+    }
+
+    #[test]
+    fn leaves_the_emoji_identifier_alone_if_it_is_not_recognised() {
+        let input = indoc! {"
+        Look at this :idonotexist:
+        "};
+
+        let options = ParseOptions::default();
+
+        let Markdown {
+            as_html,
+            headings: _headings,
+            links: _links,
+        } = parse(&input, Some(options));
+
+        assert_eq!(as_html, "<p>Look at this :idonotexist:</p>\n");
+    }
+    
+    #[test]
+    fn ignores_identifiers_that_do_not_end() {
+        let input = indoc! {"
+        Look at this :stop
+        "};
+
+        let options = ParseOptions::default();
+
+        let Markdown {
+            as_html,
+            headings: _headings,
+            links: _links,
+        } = parse(&input, Some(options));
+
+        assert_eq!(as_html, "<p>Look at this :stop</p>\n");
+    }
+
+    #[test]
+    fn ignores_identifiers_that_do_not_end_with_whitespace() {
+        let input = indoc! {"
+        Look at this :stop MORE
+        "};
+
+        let options = ParseOptions::default();
+
+        let Markdown {
+            as_html,
+            headings: _headings,
+            links: _links,
+        } = parse(&input, Some(options));
+
+        assert_eq!(as_html, "<p>Look at this :stop MORE</p>\n");
+    }
+
 }
