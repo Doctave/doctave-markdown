@@ -10,6 +10,7 @@ description = "Custom wrapper for pulldown-cmark to generate Doctave-compatible 
 pulldown-cmark = { version = "0.8", default-features = false, features = ["simd"] }
 ammonia = "3"
 url = "2.2.1"
+emojis = "0.1.2"
 
 [dev-dependencies]
 indoc = "1.0.2"
