@@ -2,10 +2,16 @@
 #[macro_use]
 extern crate indoc;
 
+#[macro_use]
+extern crate lazy_static;
+
 use pulldown_cmark::{html, CodeBlockKind, CowStr, Event, LinkType, Options, Parser, Tag};
+use regex::Regex;
 use url::{ParseError, Url};
 
 use std::collections::{HashMap, HashSet};
+use std::convert::TryFrom;
+use std::fmt;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, PartialEq, Clone)]
@@ -32,6 +38,69 @@ pub struct Link {
 pub enum UrlType {
     Local(PathBuf),
     Remote(Url),
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct Callout {
+    kind: CalloutKind,
+    title: Option<String>,
+}
+
+impl Callout {
+    fn build(kind: &str) -> Result<Self, &'static str> {
+        let kind = CalloutKind::try_from(kind)?;
+        let title = Some(kind.to_string());
+
+        Ok(Callout { kind, title })
+    }
+
+    fn build_with_title(kind: &str, raw_title: &str) -> Result<Self, &'static str> {
+        let title;
+        let kind = CalloutKind::try_from(kind)?;
+
+        if raw_title == "" {
+            title = None;
+        } else {
+            title = Some(raw_title.to_owned());
+        }
+
+        Ok(Callout { kind, title })
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum CalloutKind {
+    Info,
+    Success,
+    Warning,
+    Error,
+}
+
+impl TryFrom<&str> for CalloutKind {
+    type Error = &'static str;
+
+    fn try_from(value: &str) -> Result<Self, &'static str> {
+        match value {
+            "info" => Ok(CalloutKind::Info),
+            "notice" => Ok(CalloutKind::Info),
+            "success" => Ok(CalloutKind::Success),
+            "warning" => Ok(CalloutKind::Warning),
+            "warn" => Ok(CalloutKind::Warning),
+            "error" => Ok(CalloutKind::Error),
+            _ => Err("Unknown callout kind"),
+        }
+    }
+}
+
+impl fmt::Display for CalloutKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CalloutKind::Info => write!(f, "info"),
+            CalloutKind::Success => write!(f, "success"),
+            CalloutKind::Warning => write!(f, "warning"),
+            CalloutKind::Error => write!(f, "error"),
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -64,27 +133,31 @@ pub fn parse(input: &str, opts: Option<ParseOptions>) -> Markdown {
     let mut heading_level = 0;
     let mut heading_index = 1u32;
     let mut links = vec![];
-
+    let mut active_callout = None;
     let mut current_link = None;
 
-    let parser = Parser::new_ext(input, options).filter_map(|event| {
+    let mut parser = Parser::new_ext(input, options).into_iter().peekable();
+
+    let mut events = Vec::new();
+
+    while let Some(event) = parser.next() {
         match event {
             // Mermaid JS code block tranformations
             Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(inner))) => {
                 let lang = inner.split(' ').next().unwrap();
 
                 if lang == "mermaid" {
-                    Some(Event::Html(CowStr::Borrowed("<div class=\"mermaid\">")))
+                    events.push(Event::Html(CowStr::Borrowed("<div class=\"mermaid\">")));
                 } else {
-                    Some(Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(inner))))
+                    events.push(Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(inner))));
                 }
             }
             Event::End(Tag::CodeBlock(CodeBlockKind::Fenced(inner))) => {
                 let lang = inner.split(' ').next().unwrap();
                 if lang == "mermaid" {
-                    Some(Event::Html(CowStr::Borrowed("</div>")))
+                    events.push(Event::Html(CowStr::Borrowed("</div>")));
                 } else {
-                    Some(Event::End(Tag::CodeBlock(CodeBlockKind::Fenced(inner))))
+                    events.push(Event::End(Tag::CodeBlock(CodeBlockKind::Fenced(inner))));
                 }
             }
 
@@ -115,7 +188,7 @@ pub fn parse(input: &str, opts: Option<ParseOptions>) -> Markdown {
                         });
                     }
                 }
-                Some(Event::Start(Tag::Link(link_type, url, title)))
+                events.push(Event::Start(Tag::Link(link_type, url, title)));
             }
 
             Event::End(Tag::Link(link_type, url, title)) => {
@@ -123,20 +196,46 @@ pub fn parse(input: &str, opts: Option<ParseOptions>) -> Markdown {
                     links.push(current_link.take().unwrap())
                 }
 
-                Some(Event::End(Tag::Link(link_type, url, title)))
+                events.push(Event::End(Tag::Link(link_type, url, title)));
             }
 
             // Image link rewrites
             Event::Start(Tag::Image(link_type, url, title)) => {
                 let (link_type, url, title) = rewrite_link(link_type, url, title, &parse_opts);
 
-                Some(Event::Start(Tag::Image(link_type, url, title)))
+                events.push(Event::Start(Tag::Image(link_type, url, title)));
             }
 
             // Apply heading anchor tags
+            // NOTE: Don't emit an event, since we create a custom
+            // header tag as part of a later event.
             Event::Start(Tag::Heading(level @ 1..=6)) => {
                 heading_level = level;
-                None
+            }
+
+            Event::Start(Tag::Paragraph) => {
+                if let Some(next_event) = parser.peek() {
+                    match next_event {
+                        Event::Text(text) => {
+                            if !is_callout_start(&text) && !is_callout_end(&text) {
+                                events.push(event);
+                            }
+                        }
+                        _ => events.push(event),
+                    }
+                } else {
+                    events.push(event)
+                }
+            }
+
+            Event::End(Tag::Paragraph) => {
+                if let Some(Event::Start(Tag::Paragraph)) = events.last() {
+                    events.pop();
+                } else if is_callout_close_event(events.last()) {
+                    // Skip
+                } else {
+                    events.push(event);
+                }
             }
 
             Event::Text(text) => {
@@ -147,7 +246,36 @@ pub fn parse(input: &str, opts: Option<ParseOptions>) -> Markdown {
                     link.title.push_str(&text);
                 }
 
-                if heading_level != 0 {
+                if active_callout.is_some() && is_callout_end(&text) {
+                    active_callout = None;
+                    if Some(&Event::End(Tag::Paragraph)) != events.last() {
+                        events.push(Event::End(Tag::Paragraph));
+                    }
+                    events.push(Event::Html(CowStr::from(format!("</div>"))));
+                    if Some(&Event::SoftBreak) == parser.peek() {
+                        events.push(Event::Start(Tag::Paragraph));
+                    }
+                } else if active_callout.is_none() && is_callout_start(&text) {
+                    if let Some(callout) = parse_callout(&text) {
+                        active_callout = Some(callout.clone());
+
+                        if let Some(title) = callout.title {
+                            events.push(Event::Html(CowStr::from(format!(
+                                "<div class=\"callout {}\"><p class=\"callout-title\">{}</p>",
+                                callout.kind, title
+                            ))));
+                        } else {
+                            events.push(Event::Html(CowStr::from(format!(
+                                "<div class=\"callout {}\">",
+                                callout.kind
+                            ))));
+                        }
+                    } else {
+                        events.push(Event::Text(text.into()));
+                    }
+
+                    events.push(Event::Start(Tag::Paragraph));
+                } else if heading_level != 0 {
                     let mut anchor = text.clone().trim().to_lowercase().replace(" ", "-");
 
                     anchor.push('-');
@@ -167,21 +295,29 @@ pub fn parse(input: &str, opts: Option<ParseOptions>) -> Markdown {
                     });
 
                     heading_level = 0;
-                    tmp
+                    events.push(tmp);
                 } else {
-                    Some(Event::Text(text.into()))
+                    events.push(Event::Text(text.into()));
                 }
             }
-            _ => Some(event),
-        }
-    });
+            _ => events.push(event),
+        };
+    }
 
     // Write to String buffer.
     let mut as_html = String::new();
-    html::push_html(&mut as_html, parser);
+    html::push_html(&mut as_html, events.into_iter());
 
     let mut allowed_div_classes = HashSet::new();
+    // Mermaid JS block
     allowed_div_classes.insert("mermaid");
+    // Callout-specific
+    allowed_div_classes.insert("callout");
+    allowed_div_classes.insert("callout-title");
+    allowed_div_classes.insert("info");
+    allowed_div_classes.insert("success");
+    allowed_div_classes.insert("warning");
+    allowed_div_classes.insert("error");
 
     let mut allowed_classes = HashMap::new();
     allowed_classes.insert("div", allowed_div_classes);
@@ -202,6 +338,8 @@ pub fn parse(input: &str, opts: Option<ParseOptions>) -> Markdown {
         .add_tag_attributes("h6", &["id"])
         .add_tags(&["code"])
         .add_tag_attributes("code", &["class"])
+        .add_tags(&["p"])
+        .add_tag_attributes("p", &["class"])
         .allowed_classes(allowed_classes)
         .clean(&*as_html)
         .to_string();
@@ -266,6 +404,39 @@ fn is_in_local_domain(url_string: &str) -> bool {
         Err(url::ParseError::RelativeUrlWithoutBase) => true,
         Err(url::ParseError::EmptyHost) => true,
         Err(_) => false,
+    }
+}
+
+fn is_callout_start(text: &str) -> bool {
+    parse_callout(text).is_some()
+}
+
+fn is_callout_end(text: &str) -> bool {
+    let pattern = Regex::new(r"\{%\s*end\s*%\}").unwrap();
+
+    pattern.is_match(text)
+}
+
+fn is_callout_close_event(event: Option<&Event>) -> bool {
+    event == Some(&Event::Html(CowStr::from(format!("</div>"))))
+}
+
+lazy_static! {
+    static ref CALLOUT_PATTERN: Regex =
+        Regex::new(r"^\{%\s*(?P<type>\w+)\s*(?P<title>.*)\s*%\}$").unwrap();
+}
+
+fn parse_callout(text: &str) -> Option<Callout> {
+    if let Some(captures) = CALLOUT_PATTERN.captures(&text.trim_end()) {
+        match (captures.name("type"), captures.name("title")) {
+            (Some(callout_type), None) => Callout::build(callout_type.as_str()).ok(),
+            (Some(callout_type), Some(title)) => {
+                Callout::build_with_title(callout_type.as_str(), title.as_str().trim()).ok()
+            }
+            _ => None,
+        }
+    } else {
+        None
     }
 }
 
@@ -775,7 +946,7 @@ mod test {
 
         assert_eq!(as_html, "<p>Look at this :idonotexist:</p>\n");
     }
-    
+
     #[test]
     fn ignores_identifiers_that_do_not_end() {
         let input = indoc! {"
@@ -810,4 +981,169 @@ mod test {
         assert_eq!(as_html, "<p>Look at this :stop MORE</p>\n");
     }
 
+    fn assert_matches(actual: &str, expected: &str) {
+        if actual.trim().replace("\n", "").replace(" ", "")
+            != expected.trim().replace("\n", "").replace(" ", "")
+        {
+            assert!(
+                false,
+                "Expected and actual did not match:\n == ACTUAL ==============\n{}\n == EXPECTED ============\n{}",
+                actual,
+                expected)
+        }
+    }
+
+    #[test]
+    fn supports_callout_blocks() {
+        let kinds = [
+            ("info", "info"),
+            ("notice", "info"),
+            ("success", "success"),
+            ("warn", "warning"),
+            ("warning", "warning"),
+            ("error", "error"),
+        ];
+
+        for (kind, css) in kinds {
+            let input = formatdoc! {"
+        {{% {} An Note %}}
+
+        The content
+
+        More content
+
+        {{% end %}}
+        ", kind};
+
+            let options = ParseOptions::default();
+
+            let Markdown {
+                as_html,
+                headings: _headings,
+                links: _links,
+            } = parse(&input, Some(options));
+
+            let expected = formatdoc! {"
+        <div class=\"callout {}\"><p class=\"callout-title\">An Note</p>
+        <p>The content</p>
+        <p>More content</p>
+        </div>", css};
+
+            assert_eq!(as_html, expected);
+        }
+    }
+
+    #[test]
+    fn callouts_dont_need_space_after_starting() {
+        let input = indoc! {"
+        {% warning An Note %}
+        The content
+        {% end %}
+        "};
+
+        let options = ParseOptions::default();
+
+        let Markdown {
+            as_html,
+            headings: _headings,
+            links: _links,
+        } = parse(&input, Some(options));
+
+        let expected = indoc! {"
+        <div class=\"callout warning\"><p class=\"callout-title\">An Note</p>
+        <p>The content
+        </p></div>"};
+
+        assert_matches(&as_html, &expected);
+    }
+
+    #[test]
+    fn callouts_can_have_stuff_after_it() {
+        let input = indoc! {"
+        {% warning An Note %}
+        The content
+        {% end %}
+
+        Moar
+        "};
+
+        let options = ParseOptions::default();
+
+        let Markdown {
+            as_html,
+            headings: _headings,
+            links: _links,
+        } = parse(&input, Some(options));
+
+        let expected = indoc! {"
+        <div class=\"callout warning\">
+            <p class=\"callout-title\">An Note</p>
+            <p>The content</p>
+        </div>
+        <p>Moar</p>
+        "};
+
+        assert_matches(&as_html, &expected);
+    }
+
+    #[test]
+    fn callouts_cannot_be_nested() {
+        let input = indoc! {"
+        {% warning An Warning %}
+        {% info An Info %}
+        The content
+        {% end %}
+        More content
+        {% end %}
+        "};
+
+        let options = ParseOptions::default();
+
+        let Markdown {
+            as_html,
+            headings: _headings,
+            links: _links,
+        } = parse(&input, Some(options));
+
+        let expected = indoc! {"
+        <div class=\"callout warning\">
+            <p class=\"callout-title\">An Warning</p>
+            <p>
+                {% info An Info %}
+                The content
+            </p>
+        </div>
+        <p>
+            More content
+            {% end %}
+        </p>"
+        };
+
+        assert_matches(&as_html, &expected);
+    }
+
+    #[test]
+    fn callouts_can_contain_images() {
+        let input = indoc! {"
+        {% info An Info %}
+        ![an pic](/cat.jpg)
+        {% end %}
+        "};
+
+        let options = ParseOptions::default();
+
+        let Markdown {
+            as_html,
+            headings: _headings,
+            links: _links,
+        } = parse(&input, Some(options));
+
+        let expected = indoc! {"
+        <div class=\"callout info\">
+            <p class=\"callout-title\">An Info</p>
+            <p><img src=\"/cat.jpg\" alt=\"an pic\"></p>
+        </div>"};
+
+        assert_matches(&as_html, &expected);
+    }
 }
