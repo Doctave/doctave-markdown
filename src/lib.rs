@@ -340,7 +340,12 @@ pub fn parse(input: &str, opts: Option<ParseOptions>) -> Markdown {
         .add_tag_attributes("code", &["class"])
         .add_tags(&["p"])
         .add_tag_attributes("p", &["class"])
+        .add_tags(&["input"])
+        .add_tag_attribute_values("input", "disabled", &[""])
+        .add_tag_attribute_values("input", "type", &["checkbox"])
+        .add_tag_attribute_values("input", "checked", &[""])
         .allowed_classes(allowed_classes)
+        .add_clean_content_tags(&["form", "script", "style"])
         .clean(&*as_html)
         .to_string();
 
@@ -1143,6 +1148,62 @@ mod test {
             <p class=\"callout-title\">An Info</p>
             <p><img src=\"/cat.jpg\" alt=\"an pic\"></p>
         </div>"};
+
+        assert_matches(&as_html, &expected);
+    }
+
+    #[test]
+    fn supports_github_style_markdown_checkboxes() {
+        let input = indoc! {"
+        * [ ] Incomplete
+        * [x] Complete
+        "};
+
+        let options = ParseOptions::default();
+
+        let Markdown {
+            as_html,
+            headings: _headings,
+            links: _links,
+        } = parse(&input, Some(options));
+
+        let expected = indoc! {"
+        <ul>
+            <li>
+                <input disabled=\"\" type=\"checkbox\">
+                Incomplete
+            </li>
+            <li>
+                <input disabled=\"\" type=\"checkbox\" checked=\"\">
+                Complete
+            </li>
+        </ul>
+
+        "};
+
+        assert_matches(&as_html, &expected);
+    }
+
+    #[test]
+    fn does_not_allow_random_forms() {
+        let input = indoc! {"
+        <form>
+          <label for=\"ufname\">First name:</label><br>
+          <input type=\"text\" id=\"fname\" name=\"fname\"><br>
+          <label for=\"lname\">Last name:</label><br>
+          <input type=\"text\" id=\"lname\" name=\"lname\">
+        </form>
+        "};
+
+        let options = ParseOptions::default();
+
+        let Markdown {
+            as_html,
+            headings: _headings,
+            links: _links,
+        } = parse(&input, Some(options));
+
+        let expected = "";
 
         assert_matches(&as_html, &expected);
     }
