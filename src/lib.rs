@@ -412,27 +412,27 @@ fn is_in_local_domain(url_string: &str) -> bool {
     }
 }
 
+lazy_static! {
+    static ref CALLOUT_PATTERN_START: Regex =
+        Regex::new(r"^\{%\s*(?P<type>\w+)\s*(?P<title>.*)\s*%\}$").unwrap();
+    static ref CALLOUT_PATTERN_END: Regex =
+        Regex::new(r"\{%\s*end\s*%\}").unwrap();
+}
+
 fn is_callout_start(text: &str) -> bool {
     parse_callout(text).is_some()
 }
 
 fn is_callout_end(text: &str) -> bool {
-    let pattern = Regex::new(r"\{%\s*end\s*%\}").unwrap();
-
-    pattern.is_match(text)
+    CALLOUT_PATTERN_END.is_match(text)
 }
 
 fn is_callout_close_event(event: Option<&Event>) -> bool {
     event == Some(&Event::Html(CowStr::from(format!("</div>"))))
 }
 
-lazy_static! {
-    static ref CALLOUT_PATTERN: Regex =
-        Regex::new(r"^\{%\s*(?P<type>\w+)\s*(?P<title>.*)\s*%\}$").unwrap();
-}
-
 fn parse_callout(text: &str) -> Option<Callout> {
-    if let Some(captures) = CALLOUT_PATTERN.captures(&text.trim_end()) {
+    if let Some(captures) = CALLOUT_PATTERN_START.captures(&text.trim_end()) {
         match (captures.name("type"), captures.name("title")) {
             (Some(callout_type), None) => Callout::build(callout_type.as_str()).ok(),
             (Some(callout_type), Some(title)) => {
