@@ -370,11 +370,9 @@ fn rewrite_link<'a>(
         .get(&url.clone().into_string())
     {
         (link_type, matching_link.as_str().into(), title)
-    } else if Path::new(&url.clone().into_string()).is_absolute() {
-        let rewritten = Path::new(&parse_opts.url_root)
-            .join(&url.to_string()[1..])
-            .display()
-            .to_string();
+    } else if Path::new(&url.clone().into_string()).starts_with("/") {
+        let mut rewritten = parse_opts.url_root.trim_end_matches('/').to_string();
+        rewritten.push_str(&url.to_string());
 
         (link_type, rewritten.into(), title)
     } else {
@@ -415,8 +413,7 @@ fn is_in_local_domain(url_string: &str) -> bool {
 lazy_static! {
     static ref CALLOUT_PATTERN_START: Regex =
         Regex::new(r"^\{%\s*(?P<type>\w+)\s*(?P<title>.*)\s*%\}$").unwrap();
-    static ref CALLOUT_PATTERN_END: Regex =
-        Regex::new(r"\{%\s*end\s*%\}").unwrap();
+    static ref CALLOUT_PATTERN_END: Regex = Regex::new(r"\{%\s*end\s*%\}").unwrap();
 }
 
 fn is_callout_start(text: &str) -> bool {
