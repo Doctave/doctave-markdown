@@ -147,14 +147,16 @@ pub fn parse(input: &str, opts: Option<ParseOptions>) -> Markdown {
                 let lang = inner.split(' ').next().unwrap();
 
                 if lang == "mermaid" {
-                    events.push(Event::Html(CowStr::Borrowed("<div class=\"mermaid\">")));
+                    events.push(Event::Html(CowStr::Borrowed("<div class=\"mermaid\">\n")));
+                } else if lang == "math" {
+                    events.push(Event::Html(CowStr::Borrowed("<div class=\"math\">\n")));
                 } else {
                     events.push(Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(inner))));
                 }
             }
             Event::End(Tag::CodeBlock(CodeBlockKind::Fenced(inner))) => {
                 let lang = inner.split(' ').next().unwrap();
-                if lang == "mermaid" {
+                if lang == "mermaid" || lang == "math" {
                     events.push(Event::Html(CowStr::Borrowed("</div>")));
                 } else {
                     events.push(Event::End(Tag::CodeBlock(CodeBlockKind::Fenced(inner))));
@@ -309,8 +311,9 @@ pub fn parse(input: &str, opts: Option<ParseOptions>) -> Markdown {
     html::push_html(&mut as_html, events.into_iter());
 
     let mut allowed_div_classes = HashSet::new();
-    // Mermaid JS block
+    // Mermaid JS and math blocks
     allowed_div_classes.insert("mermaid");
+    allowed_div_classes.insert("math");
     // Callout-specific
     allowed_div_classes.insert("callout");
     allowed_div_classes.insert("callout-title");
@@ -800,7 +803,8 @@ mod test {
         assert_eq!(
             as_html,
             indoc! {"
-        <div class=\"mermaid\">graph TD;
+        <div class=\"mermaid\">
+        graph TD;
             A--&gt;B;
             A--&gt;C;
         </div>"}
@@ -1203,5 +1207,30 @@ mod test {
         let expected = "";
 
         assert_matches(&as_html, &expected);
+    }
+
+    #[test]
+    fn it_detects_math_blocks() {
+        let input = indoc! {"
+        ```math
+        % \\f is defined as #1f(#2) using the macro
+        \\f\\relax{x} = \\int_{-\\infty}^\\infty
+            \\f\\hat\\xi\\,e^{2 \\pi i \\xi x}
+            \\,d\\xi
+        ```
+        "};
+
+        let options = ParseOptions::default();
+
+        let Markdown {
+            as_html,
+            headings: _headings,
+            links: _links,
+        } = parse(&input, Some(options));
+
+        // Not a regular language block
+        assert!(as_html.contains("class=\"math\""));
+        // Contains the contents of the match block
+        assert!(as_html.contains("f is defined as"));
     }
 }
