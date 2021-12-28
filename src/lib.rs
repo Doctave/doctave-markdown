@@ -25,7 +25,7 @@ pub struct Markdown {
 pub struct Heading {
     pub title: String,
     pub anchor: String,
-    pub level: u16,
+    pub level: u32,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -130,11 +130,10 @@ pub fn parse(input: &str, opts: Option<ParseOptions>) -> Markdown {
     options.insert(Options::ENABLE_TABLES);
 
     let mut headings = vec![];
-    let mut heading_level = 0;
-    let mut heading_index = 1u32;
     let mut links = vec![];
     let mut active_callout = None;
     let mut current_link = None;
+    let mut current_heading: Option<Heading> = None;
 
     let mut parser = Parser::new_ext(input, options).into_iter().peekable();
 
@@ -161,6 +160,20 @@ pub fn parse(input: &str, opts: Option<ParseOptions>) -> Markdown {
                 } else {
                     events.push(Event::End(Tag::CodeBlock(CodeBlockKind::Fenced(inner))));
                 }
+            }
+            Event::Code(ref text) => {
+                if let Some(heading) = &mut current_heading {
+                    if heading.anchor.len() != 0 {
+                        heading.anchor.push('-');
+                    }
+
+                    heading
+                        .anchor
+                        .push_str(&text.clone().trim().to_lowercase().replace(" ", "-"));
+
+                    heading.title.push_str(&text);
+                }
+                events.push(event);
             }
 
             // Link rewrites
@@ -209,10 +222,35 @@ pub fn parse(input: &str, opts: Option<ParseOptions>) -> Markdown {
             }
 
             // Apply heading anchor tags
-            // NOTE: Don't emit an event, since we create a custom
-            // header tag as part of a later event.
             Event::Start(Tag::Heading(level @ 1..=6)) => {
-                heading_level = level;
+                current_heading = Some(Heading {
+                    level: level,
+                    anchor: String::new(),
+                    title: String::new(),
+                });
+
+                events.push(event);
+            }
+
+            Event::End(Tag::Heading(_)) => {
+                let closed_heading = current_heading.take().unwrap();
+
+                let header_start = events
+                    .iter_mut()
+                    .rev()
+                    .find(|tag| match tag {
+                        Event::Start(Tag::Heading(_)) => true,
+                        _ => false,
+                    })
+                    .unwrap();
+
+                *header_start = Event::Html(CowStr::from(format!(
+                    "<h{} id=\"{}\">",
+                    closed_heading.level, closed_heading.anchor
+                )));
+
+                headings.push(closed_heading);
+                events.push(event);
             }
 
             Event::Start(Tag::Paragraph) => {
@@ -248,6 +286,18 @@ pub fn parse(input: &str, opts: Option<ParseOptions>) -> Markdown {
                     link.title.push_str(&text);
                 }
 
+                if let Some(heading) = &mut current_heading {
+                    if heading.anchor.len() != 0 {
+                        heading.anchor.push('-');
+                    }
+
+                    heading
+                        .anchor
+                        .push_str(&text.clone().trim().to_lowercase().replace(" ", "-"));
+
+                    heading.title.push_str(&text);
+                }
+
                 if active_callout.is_some() && is_callout_end(&text) {
                     active_callout = None;
                     if Some(&Event::End(Tag::Paragraph)) != events.last() {
@@ -277,27 +327,6 @@ pub fn parse(input: &str, opts: Option<ParseOptions>) -> Markdown {
                     }
 
                     events.push(Event::Start(Tag::Paragraph));
-                } else if heading_level != 0 {
-                    let mut anchor = text.clone().trim().to_lowercase().replace(" ", "-");
-
-                    anchor.push('-');
-                    anchor.push_str(&heading_index.to_string());
-
-                    let tmp = Event::Html(CowStr::from(format!(
-                        "<h{} id=\"{}\">{}",
-                        heading_level, anchor, text
-                    )))
-                    .into();
-
-                    heading_index += 1;
-                    headings.push(Heading {
-                        anchor,
-                        title: text.to_string(),
-                        level: heading_level as u16,
-                    });
-
-                    heading_level = 0;
-                    events.push(tmp);
                 } else {
                     events.push(Event::Text(text.into()));
                 }
@@ -501,9 +530,9 @@ mod test {
         assert_eq!(
             as_html,
             indoc! {"
-                <h1 id=\"my-heading-1\">My heading</h1>
+                <h1 id=\"my-heading\">My heading</h1>
                 <p>Some content</p>
-                <h2 id=\"some-other-heading-2\">Some other heading</h2>
+                <h2 id=\"some-other-heading\">Some other heading</h2>
             "}
         );
 
@@ -512,12 +541,12 @@ mod test {
             vec![
                 Heading {
                     title: "My heading".to_string(),
-                    anchor: "my-heading-1".to_string(),
+                    anchor: "my-heading".to_string(),
                     level: 1,
                 },
                 Heading {
                     title: "Some other heading".to_string(),
-                    anchor: "some-other-heading-2".to_string(),
+                    anchor: "some-other-heading".to_string(),
                     level: 2,
                 }
             ]
@@ -1232,5 +1261,29 @@ mod test {
         assert!(as_html.contains("class=\"math\""));
         // Contains the contents of the match block
         assert!(as_html.contains("f is defined as"));
+    }
+
+    #[test]
+    fn code_blocks_in_headings_included_in_heading_titles() {
+        // https://github.com/Doctave/doctave/issues/15
+        let input = indoc! {"
+        # Foo `bar` baz
+        "};
+
+        let options = ParseOptions::default();
+
+        let Markdown {
+            as_html: _as_html,
+            links: _links,
+            headings,
+        } = parse(&input, Some(options));
+
+        let link = headings.get(0).unwrap();
+
+        assert!(
+            link.title == "Foo bar baz",
+            "Incorrect title. Expected \"Foo bar baz\", got \"{}\"",
+            link.title
+        );
     }
 }
