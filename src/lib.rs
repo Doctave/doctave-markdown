@@ -122,6 +122,13 @@ impl Default for ParseOptions {
 }
 
 pub fn parse(input: &str, opts: Option<ParseOptions>) -> Markdown {
+    let input = if input.len() >= 3 && input[0..3].as_bytes() == &[0xEF, 0xBB, 0xBF] {
+        // NOTE(unwrap): stripping a UTF-8 code point prefix from a
+        // valid str produces a valid str
+        core::str::from_utf8(&input.as_bytes()[3..]).unwrap()
+    } else {
+        input
+    };
     let parse_opts = opts.unwrap_or(ParseOptions::default());
 
     let mut options = Options::empty();
@@ -1284,6 +1291,29 @@ mod test {
             link.title == "Foo bar baz",
             "Incorrect title. Expected \"Foo bar baz\", got \"{}\"",
             link.title
+        );
+    }
+
+    #[test]
+    fn correctly_parse_utf8_bom() {
+        let input =
+            core::str::from_utf8(&[0xEF, 0xBB, 0xBF, b'#', b' ', b'T', b'i', b't', b'l', b'e'])
+                .unwrap();
+
+        let Markdown {
+            as_html: _,
+            headings,
+            links: _,
+        } = parse(&input, Some(ParseOptions::default()));
+
+        assert_eq!(headings.len(), 1);
+        assert_eq!(
+            headings[0],
+            Heading {
+                title: "Title".into(),
+                anchor: "title".into(),
+                level: 1,
+            }
         );
     }
 }
